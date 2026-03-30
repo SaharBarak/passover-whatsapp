@@ -1,64 +1,9 @@
-import { execSync } from "child_process";
 import pkg from "whatsapp-web.js";
 const { Client, LocalAuth } = pkg;
 import qrcode from "qrcode-terminal";
-import Anthropic from "@anthropic-ai/sdk";
 import ExcelJS from "exceljs";
 
 const START_OF_2025 = new Date("2025-01-01T00:00:00");
-let anthropic;
-
-function promptForKey() {
-  if (process.env.ANTHROPIC_API_KEY) {
-    console.log("Found ANTHROPIC_API_KEY in environment.\n");
-    anthropic = new Anthropic();
-    return;
-  }
-  process.stdout.write("Paste your Anthropic API key: ");
-  const key = execSync("read -r line && echo $line", {
-    encoding: "utf-8",
-    stdio: ["inherit", "pipe", "pipe"],
-  }).trim();
-  if (!key) {
-    console.error("No API key provided. Exiting.");
-    process.exit(1);
-  }
-  process.env.ANTHROPIC_API_KEY = key;
-  anthropic = new Anthropic();
-  console.log("API key set.\n");
-}
-
-async function analyzeConversation(messages) {
-  const sample = messages.slice(0, 50).map((m) => m.body).filter(Boolean).join("\n");
-  if (!sample.trim()) return null;
-
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 50,
-    messages: [
-      {
-        role: "user",
-        content: `Analyze this WhatsApp conversation and answer in exactly this JSON format, nothing else:
-{"is_lead": true/false, "status": "customer|hot|warm|cold|not_lead", "language": "Hebrew|English"}
-
-Rules:
-- "is_lead" = true if the person shows ANY sign of being a customer, potential customer, business lead, someone asking about services/products/pricing, or someone you've done business with.
-- "is_lead" = false if this is clearly a personal/family/friend chat with zero business context.
-- "status": "customer" = existing/past customer, "hot" = actively interested, "warm" = showed some interest, "cold" = minimal interest but still a lead, "not_lead" = personal contact.
-- "language": primary language of the conversation.
-
-Conversation:
-${sample}`,
-      },
-    ],
-  });
-
-  try {
-    return JSON.parse(response.content[0].text.trim());
-  } catch {
-    return null;
-  }
-}
 
 function extractEmails(messages) {
   const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
@@ -71,8 +16,6 @@ function extractEmails(messages) {
 }
 
 async function main() {
-  promptForKey();
-
   console.log("Starting WhatsApp Web client...");
   console.log("Looking for cached session in .wwebjs_auth/...\n");
 
@@ -154,11 +97,9 @@ async function main() {
 
     let allMessages = [];
     try {
-      // Fetch in batches to get messages going back to 2025
       let messages = await chat.fetchMessages({ limit: 500 });
       allMessages = messages;
 
-      // If oldest message is still in 2025+, try to load more
       if (messages.length === 500) {
         const oldest = messages[0];
         if (oldest && oldest.timestamp * 1000 >= START_OF_2025.getTime()) {
@@ -180,39 +121,20 @@ async function main() {
     );
 
     if (recentMessages.length === 0) {
-      console.log(`  Skipped — no messages in 2025`);
+      console.log(`  Skipped — no messages since Jan 2025`);
       continue;
     }
 
-    console.log(`  Found ${recentMessages.length} messages in 2025`);
-
-    const textMessages = recentMessages.filter((m) => m.body?.trim());
-
-    if (textMessages.length === 0) {
-      console.log(`  Skipped — no text messages`);
-      continue;
-    }
-
-    let analysis;
-    try {
-      analysis = await analyzeConversation(textMessages);
-    } catch (err) {
-      console.error(`  Analysis failed: ${err.message}`);
-      continue;
-    }
-
-    if (!analysis || !analysis.is_lead) {
-      console.log(`  Skipped — not a lead/customer`);
-      continue;
-    }
-
+    const messageCount = recentMessages.length;
+    const lastMsg = recentMessages[recentMessages.length - 1];
+    const lastMessageDate = new Date(lastMsg.timestamp * 1000).toISOString().split("T")[0];
     const email = extractEmails(recentMessages);
 
-    rows.push({ name, phone, email, language: analysis.language || "Unknown", status: analysis.status || "Unknown" });
-    console.log(`  -> ${analysis.status.toUpperCase()} | ${analysis.language}${email ? ` | Email: ${email}` : ""}`);
+    rows.push({ name, phone, email, messageCount, lastMessageDate });
+    console.log(`  ${messageCount} messages | last: ${lastMessageDate}${email ? ` | ${email}` : ""}`);
   }
 
-  console.log(`\nProcessed ${rows.length} contacts. Writing Excel file...`);
+  console.log(`\nExporting ${rows.length} contacts to Excel...`);
 
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("WhatsApp Contacts");
@@ -221,8 +143,8 @@ async function main() {
     { header: "Name", key: "name", width: 25 },
     { header: "Phone Number", key: "phone", width: 20 },
     { header: "Email", key: "email", width: 35 },
-    { header: "Language", key: "language", width: 15 },
-    { header: "Status", key: "status", width: 15 },
+    { header: "Messages (since Jan 2025)", key: "messageCount", width: 25 },
+    { header: "Last Message Date", key: "lastMessageDate", width: 20 },
   ];
 
   sheet.getRow(1).font = { bold: true };
@@ -233,7 +155,7 @@ async function main() {
 
   const filename = "whatsapp_contacts.xlsx";
   await workbook.xlsx.writeFile(filename);
-  console.log(`\nDone! Saved to ${filename}`);
+  console.log(`\nDone! Saved ${rows.length} contacts to ${filename}`);
 
   await client.destroy();
   process.exit(0);
