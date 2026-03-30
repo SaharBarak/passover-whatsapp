@@ -81,7 +81,7 @@ async function main() {
     puppeteer: {
       headless: true,
       args: ["--no-sandbox"],
-      protocolTimeout: 600000,
+      protocolTimeout: 3600000,
     },
   });
 
@@ -102,10 +102,44 @@ async function main() {
 
   console.log("WhatsApp Web client is ready!\n");
   console.log("Fetching chats (this may take a few minutes)...\n");
+  console.log("Scrolling chat list to load older conversations...\n");
+
+  // Force WhatsApp Web to load more chats by scrolling the chat list
+  const page = client.pupPage;
+  let prevCount = 0;
+  let stableRounds = 0;
+
+  for (let scroll = 0; scroll < 300; scroll++) {
+    await page.evaluate(() => {
+      const chatListEl = document.querySelector('[data-tab="3"]') ||
+        document.querySelector("#pane-side") ||
+        document.querySelector("[data-testid='chat-list']");
+      if (chatListEl) {
+        chatListEl.scrollTop = chatListEl.scrollHeight;
+      }
+    });
+    await new Promise((r) => setTimeout(r, 800));
+
+    // Check count every 5 scrolls to avoid slowdown
+    if ((scroll + 1) % 5 === 0) {
+      const currentCount = (await client.getChats()).length;
+      if (currentCount === prevCount) {
+        stableRounds++;
+        if (stableRounds >= 3) {
+          console.log(`Chat list fully loaded after ${scroll + 1} scrolls (${currentCount} chats).`);
+          break;
+        }
+      } else {
+        stableRounds = 0;
+        console.log(`  Scroll ${scroll + 1}: ${currentCount} chats loaded...`);
+      }
+      prevCount = currentCount;
+    }
+  }
 
   const chats = await client.getChats();
   const directChats = chats.filter((c) => !c.isGroup);
-  console.log(`Found ${chats.length} total chats (${directChats.length} direct, ${chats.length - directChats.length} groups).\n`);
+  console.log(`\nFound ${chats.length} total chats (${directChats.length} direct, ${chats.length - directChats.length} groups).\n`);
 
   const rows = [];
   const total = directChats.length;
@@ -118,15 +152,30 @@ async function main() {
 
     console.log(`[${i + 1}/${total}] ${name} (${phone})`);
 
-    let messages;
+    let allMessages = [];
     try {
-      messages = await chat.fetchMessages({ limit: 200 });
+      // Fetch in batches to get messages going back to 2025
+      let messages = await chat.fetchMessages({ limit: 500 });
+      allMessages = messages;
+
+      // If oldest message is still in 2025+, try to load more
+      if (messages.length === 500) {
+        const oldest = messages[0];
+        if (oldest && oldest.timestamp * 1000 >= START_OF_2025.getTime()) {
+          try {
+            const moreMessages = await chat.fetchMessages({ limit: 1000 });
+            allMessages = moreMessages;
+          } catch {
+            // stick with what we have
+          }
+        }
+      }
     } catch (err) {
       console.log(`  Skipped — failed to fetch messages: ${err.message}`);
       continue;
     }
 
-    const recentMessages = messages.filter(
+    const recentMessages = allMessages.filter(
       (m) => m.timestamp * 1000 >= START_OF_2025.getTime()
     );
 
