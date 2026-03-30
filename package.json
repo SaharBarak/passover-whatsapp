@@ -1,0 +1,16 @@
+{
+  "name": "passover-whatsapp",
+  "version": "1.0.0",
+  "description": "WhatsApp contact exporter with language detection",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "exceljs": "^4.4.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.26.1-alpha.3"
+  }
+}
